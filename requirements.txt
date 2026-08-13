@@ -1,0 +1,6 @@
+langchain-core==1.2.22
+langchain-ollama==1.0.1
+mcp==1.26.0
+python-dotenv==1.2.2
+requests==2.33.0
+streamlit==1.56.0

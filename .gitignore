@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.vscode/
+.qodo/
+.env
+.env.*
+!.env.example
+favoritos.txt
+favoritos.json
+busquedas_guardadas.json
+mis_favoritos.txt
