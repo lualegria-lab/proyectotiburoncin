@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import html
-import hashlib
-import json
 import os
 import re
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import streamlit as st
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -17,17 +14,29 @@ from langchain_ollama import ChatOllama
 from empleo_utils import (
     ConfigError,
     ExternalServiceError,
-    FAVORITES_FILE,
     SAMPLE_JOBS_FILE,
     clean_text,
     normalize_tool_args,
     sample_jobs_enabled,
     search_jobs,
 )
-
-
-FAVORITES_JSON_FILE = FAVORITES_FILE.with_suffix(".json")
-SAVED_SEARCHES_FILE = FAVORITES_FILE.with_name("busquedas_guardadas.json")
+from state_store import (
+    FAVORITES_JSON_FILE,
+    StateFileError,
+    delete_favorite_record as _delete_favorite_record,
+    favorite_ids as _favorite_ids,
+    filter_favorite_records as _filter_favorite_records,
+    format_saved_at as _format_saved_at,
+    load_saved_searches as _load_saved_searches,
+    newest_first as _newest_first,
+    normalize_favorite_record as _normalize_favorite_record,
+    now_iso as _now_iso,
+    read_favorite_records as _read_favorite_records,
+    save_search as _save_search,
+    stable_id as _stable_id,
+    update_favorite_record as _update_favorite_record,
+    upsert_favorite_record as _upsert_favorite_record,
+)
 PROVIDER_LABELS = {
     "sample": "JSON demo",
     "jooble": "Jooble",
@@ -52,6 +61,7 @@ SECRET_NAMES = (
     "THEIRSTACK_COUNTRY_CODE",
     "THEIRSTACK_POSTED_AT_MAX_AGE_DAYS",
 )
+
 LANGUAGE_OPTIONS = {"Español": "es", "English": "en"}
 CITY_OPTION_ALL = "__all__"
 CITY_OPTION_CUSTOM = "__custom__"
@@ -310,7 +320,9 @@ JOB_CATALOG = {
 }
 TRANSLATIONS = {
     "es": {
-        "app_title": "Tiburoncín Job Bot",
+        "app_title": "¿Con instinto de tiburón?",
+        "app_subtitle": "¡Vamos a por tu próxima oportunidad!",
+        "app_shark_emoji": "🦈",
         "language": "Idioma / Language",
         "sources": "Fuentes",
         "providers": "Proveedores",
@@ -337,20 +349,29 @@ TRANSLATIONS = {
         "favorites": "Favoritos",
         "favorites_empty": "No hay favoritos guardados",
         "favorites_hint": "El estado se actualiza manualmente desde aqui.",
+        "favorite_search": "Buscar favoritos",
+        "favorite_search_placeholder": "Puesto, empresa, ciudad, nota...",
+        "filtered_favorites_empty": "No hay favoritos con esos filtros.",
         "open_job": "Abrir oferta",
         "save": "Guardar",
+        "already_saved": "Ya guardado",
         "saved": "Guardado en favoritos",
+        "saved_at": "Guardado",
         "details": "Detalle",
         "status_pending": "Pendiente",
         "status_applied": "Aplicado",
         "status_interview": "Entrevista",
-        "status_discarded": "Descartado",
+        "status_discarded": "Archivado",
         "status_filter": "Estado",
         "all_statuses": "Todos los estados",
         "mark_pending": "Pendiente",
         "mark_applied": "Aplicado",
         "mark_interview": "Entrevista",
-        "mark_discarded": "Descartar",
+        "mark_discarded": "Archivar",
+        "delete_favorite": "Borrar",
+        "confirm_delete": "Confirmar borrado",
+        "cancel": "Cancelar",
+        "favorite_deleted": "Favorito borrado",
         "notes": "Notas",
         "save_note": "Guardar nota",
         "note_saved": "Nota guardada",
@@ -379,13 +400,24 @@ TRANSLATIONS = {
         "sample_jobs": "Usar JSON demo",
         "no_current_results": "No hay resultados para los filtros actuales.",
         "results": "Resultados",
-        "no_results": "No hay resultados.",
+        "no_results": "No encontre ofertas con esos filtros. Prueba con otro puesto, otra ciudad o ampliando los dias de busqueda.",
         "tool_saved": "Guardado en favoritos",
         "tool_result": "Resultado de herramienta",
+        "chat_recent_results": "Ofertas recientes del chat",
+        "chat_saved_offer": "Guardado en favoritos",
+        "chat_no_recent_results": "No hay ofertas recientes del chat para guardar.",
+        "chat_offer_not_found": "No encontre esa oferta entre los ultimos resultados del chat.",
         "chat_input": "Buscar, comparar o guardar ofertas",
+        "chat_submit": "Enviar",
+        "chat_thinking": "Pensando...",
+        "chat_shortcut_remote": "Busca empleos remotos",
+        "chat_shortcut_recent": "Busca ofertas recientes",
+        "chat_shortcut_save_first": "Guarda la primera oferta",
+        "chat_clear": "Limpiar chat",
         "ollama_error": "No pude conectar con Ollama o el modelo configurado",
         "ollama_complete_error": "No pude completar la respuesta con Ollama",
         "tool_unavailable": "Herramienta no disponible",
+        "chat_action_error": "No pude completar esa accion",
         "job_title": "Puesto",
         "city": "Ciudad",
         "remote_only": "Solo remoto",
@@ -404,14 +436,17 @@ TRANSLATIONS = {
         "source_na": "Fuente N/A",
         "at_word": "en",
         "chat_instructions": """Eres un asistente de empleo experto.
-1. Responde siempre en español.
-2. Cuando busques, usa la herramienta buscar_empleos.
-3. Muestra resultados con titulo, empresa, lugar, fuente y enlace.
-4. Si el usuario quiere guardar una oferta, usa guardar_empleo con el detalle completo y el enlace si lo conoces.
-5. No inventes ofertas ni enlaces.""",
+1. Entiende español e ingles.
+2. Responde en el idioma del ultimo mensaje del usuario.
+3. Cuando busques, usa la busqueda interna.
+4. Muestra resultados con numero, titulo, empresa, lugar, fuente y enlace.
+5. Si el usuario quiere guardar una oferta ya mostrada, no busques otra vez: guarda la oferta usando su numero, titulo, empresa o enlace.
+6. No inventes ofertas ni enlaces.""",
     },
     "en": {
-        "app_title": "Tiburoncín Job Bot",
+        "app_title": "Feeling sharky?",
+        "app_subtitle": "Let’s hunt down your next opportunity!",
+        "app_shark_emoji": "🦈",
         "language": "Idioma / Language",
         "sources": "Sources",
         "providers": "Providers",
@@ -438,20 +473,29 @@ TRANSLATIONS = {
         "favorites": "Favorites",
         "favorites_empty": "No favorites saved",
         "favorites_hint": "Status is updated manually from here.",
+        "favorite_search": "Search favorites",
+        "favorite_search_placeholder": "Role, company, city, note...",
+        "filtered_favorites_empty": "No favorites match those filters.",
         "open_job": "Open job",
         "save": "Save",
+        "already_saved": "Already saved",
         "saved": "Saved to favorites",
+        "saved_at": "Saved",
         "details": "Details",
         "status_pending": "Pending",
         "status_applied": "Applied",
         "status_interview": "Interview",
-        "status_discarded": "Discarded",
+        "status_discarded": "Archived",
         "status_filter": "Status",
         "all_statuses": "All statuses",
         "mark_pending": "Pending",
         "mark_applied": "Applied",
         "mark_interview": "Interview",
-        "mark_discarded": "Discard",
+        "mark_discarded": "Archive",
+        "delete_favorite": "Delete",
+        "confirm_delete": "Confirm delete",
+        "cancel": "Cancel",
+        "favorite_deleted": "Favorite deleted",
         "notes": "Notes",
         "save_note": "Save note",
         "note_saved": "Note saved",
@@ -480,13 +524,24 @@ TRANSLATIONS = {
         "sample_jobs": "Use JSON demo",
         "no_current_results": "No results for the current filters.",
         "results": "Results",
-        "no_results": "No results.",
+        "no_results": "I could not find jobs with those filters. Try another role, city, or a wider date range.",
         "tool_saved": "Saved to favorites",
         "tool_result": "Tool result",
+        "chat_recent_results": "Recent chat jobs",
+        "chat_saved_offer": "Saved to favorites",
+        "chat_no_recent_results": "There are no recent chat jobs to save.",
+        "chat_offer_not_found": "I could not find that job in the latest chat results.",
         "chat_input": "Search, compare, or save jobs",
+        "chat_submit": "Send",
+        "chat_thinking": "Thinking...",
+        "chat_shortcut_remote": "Find remote jobs",
+        "chat_shortcut_recent": "Find recent jobs",
+        "chat_shortcut_save_first": "Save the first job",
+        "chat_clear": "Clear chat",
         "ollama_error": "Could not connect to Ollama or the configured model",
         "ollama_complete_error": "Could not complete the response with Ollama",
         "tool_unavailable": "Tool unavailable",
+        "chat_action_error": "I could not complete that action",
         "job_title": "Role",
         "city": "City",
         "remote_only": "Remote only",
@@ -497,7 +552,7 @@ TRANSLATIONS = {
         "searching": "Searching jobs...",
         "refresh": "Refresh",
         "tab_search": "Search jobs",
-        "tab_chat": "Chat with Tiburoncín",
+        "tab_chat": "Chat with Sharky",
         "tab_favorites": "Favorites",
         "tab_config": "Settings",
         "job_na": "Role N/A",
@@ -505,11 +560,12 @@ TRANSLATIONS = {
         "source_na": "Source N/A",
         "at_word": "at",
         "chat_instructions": """You are an expert job-search assistant.
-1. Always respond in English.
-2. When searching, use the buscar_empleos tool.
-3. Show results with title, company, location, source, and link.
-4. If the user wants to save a job, use guardar_empleo with the full detail and link if known.
-5. Do not invent jobs or links.""",
+1. Understand Spanish and English.
+2. Respond in the language of the user's latest message.
+3. When searching, use the internal search.
+4. Show results with number, title, company, location, source, and link.
+5. If the user wants to save a job already shown, do not search again: save the job using its number, title, company, or link.
+6. Do not invent jobs or links.""",
     },
 }
 
@@ -518,10 +574,126 @@ def _language_code() -> str:
     return st.session_state.get("language", "es")
 
 
-def _t(key: str) -> str:
-    language = _language_code()
+def _translation(key: str, language: str | None = None) -> str:
+    language = language or _language_code()
     return TRANSLATIONS.get(language, TRANSLATIONS["es"]).get(
         key, TRANSLATIONS["es"].get(key, key)
+    )
+
+
+def _t(key: str) -> str:
+    return _translation(key)
+
+
+def _label(key: str, language: str | None = None) -> str:
+    return _translation(key, language) if language else _t(key)
+
+
+def _detect_chat_language(text: str, fallback_language: str | None = None) -> str:
+    normalized = str(text or "").lower()
+    tokens = set(re.findall(r"[a-záéíóúüñ']+", normalized, flags=re.IGNORECASE))
+    spanish_terms = {
+        "busca",
+        "buscar",
+        "buscame",
+        "búscame",
+        "quiero",
+        "necesito",
+        "empleo",
+        "empleos",
+        "trabajo",
+        "trabajos",
+        "oferta",
+        "ofertas",
+        "puesto",
+        "puestos",
+        "guarda",
+        "guardar",
+        "guardame",
+        "guárdame",
+        "favorito",
+        "favoritos",
+        "remoto",
+        "remota",
+        "ciudad",
+        "empresa",
+        "salario",
+        "sueldo",
+        "este",
+        "esta",
+        "segundo",
+        "segunda",
+        "primero",
+        "primera",
+        "proxima",
+        "próxima",
+    }
+    english_terms = {
+        "find",
+        "search",
+        "show",
+        "save",
+        "job",
+        "jobs",
+        "role",
+        "roles",
+        "offer",
+        "offers",
+        "favorite",
+        "favorites",
+        "remote",
+        "city",
+        "company",
+        "salary",
+        "this",
+        "that",
+        "first",
+        "second",
+        "next",
+        "opportunity",
+        "apply",
+        "interview",
+    }
+    spanish_score = sum(term in tokens for term in spanish_terms)
+    english_score = sum(term in tokens for term in english_terms)
+
+    if re.search(r"[¿¡áéíóúüñ]", normalized):
+        spanish_score += 2
+    if re.search(r"\b(let's|dont|don't|can't|can you|please)\b", normalized):
+        english_score += 2
+
+    if english_score > spanish_score:
+        return "en"
+    if spanish_score > english_score:
+        return "es"
+    if fallback_language in TRANSLATIONS:
+        return fallback_language
+    return _language_code() if _language_code() in TRANSLATIONS else "es"
+
+
+def _chat_language_code() -> str:
+    language = st.session_state.get("chat_response_language", _language_code())
+    return language if language in TRANSLATIONS else _language_code()
+
+
+def _chat_t(key: str) -> str:
+    return _translation(key, _chat_language_code())
+
+
+def _chat_system_message(language: str) -> SystemMessage:
+    response_language = "English" if language == "en" else "Spanish"
+    return SystemMessage(
+        content=(
+            "You are an expert job-search assistant.\n"
+            "You understand Spanish and English.\n"
+            f"The latest user message is in {response_language}. "
+            f"Respond only in {response_language} for this turn.\n"
+            "When searching, use the internal job search tool.\n"
+            "Show results with number, title, company, location, source, and link.\n"
+            "If the user wants to save a job already shown, do not search again: "
+            "save the job using its number, title, company, or link.\n"
+            "Do not invent jobs or links."
+        )
     )
 
 
@@ -532,15 +704,6 @@ def _status_options() -> tuple[str, ...]:
 def _status_label(status: str) -> str:
     normalized = status if status in _status_options() else "pending"
     return _t(f"status_{normalized}")
-
-
-def _stable_id(*parts: str) -> str:
-    raw = "|".join(str(part or "").strip().lower() for part in parts)
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
-
-
-def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
 
 
 def _city_options() -> list[str]:
@@ -673,11 +836,15 @@ def _offer_value(offer: Mapping[str, Any], *keys: str, default: str = "") -> str
     return clean_text(current, default)
 
 
-def _offer_detail(offer: Mapping[str, Any]) -> tuple[str, str, str, str, str, str]:
-    title = clean_text(offer.get("title"), _t("job_na"))
-    company = _offer_value(offer, "company", "display_name", default=_t("company_na"))
+def _offer_detail(
+    offer: Mapping[str, Any],
+    *,
+    language: str | None = None,
+) -> tuple[str, str, str, str, str, str]:
+    title = clean_text(offer.get("title"), _label("job_na", language))
+    company = _offer_value(offer, "company", "display_name", default=_label("company_na", language))
     location = _offer_value(offer, "location", "display_name", default="N/A")
-    provider = clean_text(offer.get("_provider"), _t("source_na"))
+    provider = clean_text(offer.get("_provider"), _label("source_na", language))
     salary = clean_text(offer.get("_salary"), "")
     link = clean_text(offer.get("redirect_url"), "")
     return title, company, location, provider, salary, link
@@ -694,69 +861,138 @@ def _favorite_text(offer: Mapping[str, Any]) -> str:
     )
 
 
-def _read_favorites(file_path: Path = FAVORITES_FILE) -> list[str]:
-    if not file_path.exists():
-        return []
-    return [
-        line.strip()
-        for line in file_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+def _offer_search_text(offer: Mapping[str, Any]) -> str:
+    title, company, location, provider, salary, link = _offer_detail(offer)
+    description = clean_text(offer.get("description"), "")
+    return f"{title} {company} {location} {provider} {salary} {description} {link}".lower()
 
 
-def _load_json_favorites(file_path: Path = FAVORITES_JSON_FILE) -> list[dict[str, str]]:
-    if not file_path.exists():
-        return []
-
-    try:
-        payload = json.loads(file_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return []
-
-    if not isinstance(payload, list):
-        return []
-
-    records = []
-    for item in payload:
-        if isinstance(item, Mapping):
-            records.append(_normalize_favorite_record(item))
-    return records
+def _extract_first_url(text: str) -> str:
+    match = re.search(r"https?://[^\s)>\]]+", str(text or ""))
+    return match.group(0).rstrip(".,;") if match else ""
 
 
-def _write_json_favorites(
-    favorites: list[Mapping[str, Any]],
-    file_path: Path = FAVORITES_JSON_FILE,
-) -> None:
-    normalized = [_normalize_favorite_record(favorite) for favorite in favorites]
-    file_path.write_text(
-        json.dumps(normalized, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+def _reference_index(reference: str, offer_count: int) -> int | None:
+    normalized = str(reference or "").lower()
+    number_match = re.search(r"(?:^|\D)(\d{1,2})(?:\D|$)", normalized)
+    if number_match:
+        index = int(number_match.group(1)) - 1
+        if 0 <= index < offer_count:
+            return index
+
+    word_indexes = {
+        "first": 0,
+        "1st": 0,
+        "primero": 0,
+        "primera": 0,
+        "segundo": 1,
+        "segunda": 1,
+        "second": 1,
+        "2nd": 1,
+        "tercero": 2,
+        "tercera": 2,
+        "third": 2,
+        "3rd": 2,
+        "cuarto": 3,
+        "cuarta": 3,
+        "fourth": 3,
+        "4th": 3,
+        "quinto": 4,
+        "quinta": 4,
+        "fifth": 4,
+        "5th": 4,
+    }
+    for word, index in word_indexes.items():
+        if re.search(rf"\b{re.escape(word)}\b", normalized) and index < offer_count:
+            return index
+
+    if re.search(r"\b(last|ultimo|ultima|último|última)\b", normalized):
+        return offer_count - 1 if offer_count else None
+
+    return None
+
+
+def _looks_like_chat_offer_reference(reference: str) -> bool:
+    normalized = str(reference or "").lower().strip()
+    if not normalized:
+        return False
+    return bool(
+        re.search(
+            r"\b(\d{1,2}|first|second|third|fourth|fifth|last|primero|primera|segundo|segunda|tercero|tercera|cuarto|cuarta|quinto|quinta|ultimo|ultima|último|última|este|esta|ese|esa|alguno|alguna|cualquiera|that|it|one|them)\b",
+            normalized,
+        )
     )
 
 
-def _normalize_favorite_record(record: Mapping[str, Any]) -> dict[str, str]:
-    title = clean_text(record.get("title") or record.get("text"), _t("favorites"))
-    company = clean_text(record.get("company"), "")
-    location = clean_text(record.get("location"), "")
-    link = clean_text(record.get("link") or record.get("url"), "")
-    record_id = clean_text(record.get("id"), "") or _stable_id(title, company, location, link)
-    status = clean_text(record.get("status"), "pending")
-    if status not in _status_options():
-        status = "pending"
+def _resolve_chat_offer_reference(
+    reference: str,
+    link: str = "",
+    *,
+    offers: Sequence[Mapping[str, Any]] | None = None,
+) -> Mapping[str, Any] | None:
+    chat_offers = list(offers if offers is not None else st.session_state.get("chat_search_results", []))
+    if not chat_offers:
+        return None
 
-    return {
-        "id": record_id,
-        "title": title,
-        "company": company,
-        "location": location,
-        "provider": clean_text(record.get("provider"), ""),
-        "salary": clean_text(record.get("salary"), ""),
-        "description": clean_text(record.get("description"), ""),
-        "link": link,
-        "status": status,
-        "notes": clean_text(record.get("notes"), ""),
-        "saved_at": clean_text(record.get("saved_at"), _now_iso()),
-    }
+    resolved_link = clean_text(link, "") or _extract_first_url(reference)
+    if resolved_link:
+        for offer in chat_offers:
+            if clean_text(offer.get("redirect_url"), "") == resolved_link:
+                return offer
+
+    reference_text = clean_text(reference, "").lower()
+    index = _reference_index(reference_text, len(chat_offers))
+    if index is not None:
+        return chat_offers[index]
+
+    if reference_text in {"it", "that", "that one", "este", "esta", "ese", "esa"} and len(chat_offers) == 1:
+        return chat_offers[0]
+
+    meaningful_terms = [
+        term
+        for term in re.findall(r"[\wáéíóúüñ]+", reference_text, flags=re.IGNORECASE)
+        if len(term) > 2
+        and term
+        not in {
+            "guardar",
+            "guarda",
+            "save",
+            "favoritos",
+            "favorites",
+            "oferta",
+            "job",
+            "empleo",
+            "puesto",
+            "the",
+            "that",
+            "them",
+            "one",
+            "este",
+            "esta",
+            "ese",
+            "esa",
+            "alguno",
+            "alguna",
+            "cualquiera",
+        }
+    ]
+    if not meaningful_terms:
+        return None
+
+    matches = [
+        offer
+        for offer in chat_offers
+        if all(term in _offer_search_text(offer) for term in meaningful_terms)
+    ]
+    if len(matches) == 1:
+        return matches[0]
+
+    partial_matches = [
+        offer
+        for offer in chat_offers
+        if any(term in _offer_search_text(offer) for term in meaningful_terms)
+    ]
+    return partial_matches[0] if len(partial_matches) == 1 else None
 
 
 def _favorite_record_from_offer(offer: Mapping[str, Any]) -> dict[str, str]:
@@ -778,6 +1014,11 @@ def _favorite_record_from_offer(offer: Mapping[str, Any]) -> dict[str, str]:
     )
 
 
+def _favorite_id_from_offer(offer: Mapping[str, Any]) -> str:
+    title, company, location, _provider, _salary, link = _offer_detail(offer)
+    return _stable_id(title, company, location, link)
+
+
 def _manual_favorite_record(detail: str, link: str = "") -> dict[str, str]:
     cleaned_detail = clean_text(detail, _t("favorites"))
     cleaned_link = clean_text(link, "")
@@ -792,129 +1033,50 @@ def _manual_favorite_record(detail: str, link: str = "") -> dict[str, str]:
     )
 
 
-def _parse_favorite(raw_favorite: str) -> dict[str, str]:
-    text = str(raw_favorite or "").strip()
-    link = ""
+def _save_offer_to_favorites(
+    offer: Mapping[str, Any],
+    *,
+    file_path: Path = FAVORITES_JSON_FILE,
+) -> dict[str, str]:
+    return _upsert_favorite_record(
+        _favorite_record_from_offer(offer),
+        file_path=file_path,
+        default_title=_t("favorites"),
+    )
 
-    markdown_link = re.search(r"\[(?:Enlace|Link|Abrir oferta|Open job)\]\((https?://[^)]+)\)", text, flags=re.IGNORECASE)
-    if markdown_link:
-        link = markdown_link.group(1).strip()
-        text = re.sub(
-            r"\s*\.?\s*\[(?:Enlace|Link|Abrir oferta|Open job)\]\(https?://[^)]+\)",
-            "",
-            text,
-            flags=re.IGNORECASE,
-        ).strip()
 
-    link_suffix = re.search(r"\s+-\s+Link:\s*(https?://\S+)\s*$", text, flags=re.IGNORECASE)
-    if link_suffix:
-        link = link_suffix.group(1).strip()
-        text = text[: link_suffix.start()].strip()
+def _favorite_ids_for_ui() -> set[str]:
+    return _favorite_ids(_read_favorite_records(default_title=_t("favorites")))
 
-    text = re.sub(
-        r"^(?:POSTULACIÓN PENDIENTE(?:\s+\([^)]+\))?|GUARDADO EL\s+[^:]+|Guardado):\s*",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    ).strip()
 
-    if not text:
-        text = _t("favorites")
-
-    return _normalize_favorite_record(
+def _filter_values(favorites: Sequence[Mapping[str, str]], field: str) -> list[str]:
+    return sorted(
         {
-            "id": _stable_id(text, link),
-            "title": text,
-            "link": link,
-            "status": "pending",
-            "saved_at": "",
+            clean_text(favorite.get(field), "")
+            for favorite in favorites
+            if clean_text(favorite.get(field), "")
         }
     )
 
 
-def _legacy_favorite_records(file_path: Path = FAVORITES_FILE) -> list[dict[str, str]]:
-    return [_parse_favorite(favorite) for favorite in _read_favorites(file_path=file_path)]
+def _save_chat_offer_reference(
+    reference: str,
+    link: str = "",
+    *,
+    file_path: Path = FAVORITES_JSON_FILE,
+    language: str | None = None,
+) -> str | None:
+    recent_offers = st.session_state.get("chat_search_results", [])
+    if not recent_offers:
+        return _label("chat_no_recent_results", language) if _looks_like_chat_offer_reference(reference) else None
 
+    offer = _resolve_chat_offer_reference(reference, link, offers=recent_offers)
+    if offer is None:
+        return _label("chat_offer_not_found", language) if _looks_like_chat_offer_reference(reference) or link else None
 
-def _read_favorite_records() -> list[dict[str, str]]:
-    json_records = _load_json_favorites()
-    seen = {record["id"] for record in json_records}
-    records = list(json_records)
-
-    for record in _legacy_favorite_records():
-        if record["id"] in seen:
-            continue
-        seen.add(record["id"])
-        records.append(record)
-
-    return records
-
-
-def _upsert_favorite_record(record: Mapping[str, Any]) -> None:
-    normalized = _normalize_favorite_record(record)
-    records = _load_json_favorites()
-    updated = False
-
-    for index, current in enumerate(records):
-        if current["id"] == normalized["id"]:
-            records[index] = {**current, **normalized}
-            updated = True
-            break
-
-    if not updated:
-        records.append(normalized)
-
-    _write_json_favorites(records)
-
-
-def _load_saved_searches(file_path: Path = SAVED_SEARCHES_FILE) -> list[dict[str, Any]]:
-    if not file_path.exists():
-        return []
-    try:
-        payload = json.loads(file_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(payload, list):
-        return []
-    return [item for item in payload if isinstance(item, dict)]
-
-
-def _write_saved_searches(searches: list[Mapping[str, Any]], file_path: Path = SAVED_SEARCHES_FILE) -> None:
-    file_path.write_text(
-        json.dumps(list(searches), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
-def _save_search(search: Mapping[str, Any]) -> None:
-    normalized = {
-        "id": _stable_id(
-            str(search.get("query", "")),
-            str(search.get("location", "")),
-            str(search.get("remote", "")),
-            ",".join(search.get("providers", [])),
-        ),
-        "query": str(search.get("query", "")).strip(),
-        "location": str(search.get("location", "")).strip(),
-        "remote": bool(search.get("remote", False)),
-        "max_age_days": int(search.get("max_age_days", 30)),
-        "results_per_provider": int(search.get("results_per_provider", 5)),
-        "providers": list(search.get("providers", [])),
-        "saved_at": _now_iso(),
-    }
-    searches = _load_saved_searches()
-    searches = [item for item in searches if item.get("id") != normalized["id"]]
-    searches.append(normalized)
-    _write_saved_searches(searches)
-
-
-def _update_favorite_record(record: Mapping[str, Any], **updates: str) -> None:
-    normalized = _normalize_favorite_record({**record, **updates})
-    _upsert_favorite_record(normalized)
-
-
-def _save_offer_to_favorites(offer: Mapping[str, Any]) -> None:
-    _upsert_favorite_record(_favorite_record_from_offer(offer))
+    _save_offer_to_favorites(offer, file_path=file_path)
+    title = _offer_detail(offer, language=language)[0]
+    return f"{_label('chat_saved_offer', language)}: {title}"
 
 
 def _render_status_badge(status: str) -> None:
@@ -925,7 +1087,13 @@ def _render_status_badge(status: str) -> None:
     )
 
 
-def _render_favorite_summary(favorite: Mapping[str, str], *, key_prefix: str, index: int) -> None:
+def _render_favorite_summary(
+    favorite: Mapping[str, str],
+    *,
+    key_prefix: str,
+    index: int,
+    show_management: bool = True,
+) -> None:
     title = clean_text(favorite.get("title"), _t("favorites"))
     company = clean_text(favorite.get("company"), "")
     location = clean_text(favorite.get("location"), "")
@@ -935,6 +1103,7 @@ def _render_favorite_summary(favorite: Mapping[str, str], *, key_prefix: str, in
     notes = clean_text(favorite.get("notes"), "")
     status = clean_text(favorite.get("status"), "pending")
     link = clean_text(favorite.get("link"), "")
+    saved_at = _format_saved_at(favorite.get("saved_at"))
 
     _render_status_badge(status)
     st.markdown(
@@ -942,7 +1111,8 @@ def _render_favorite_summary(favorite: Mapping[str, str], *, key_prefix: str, in
         unsafe_allow_html=True,
     )
 
-    meta_items = [item for item in (company, location, provider, salary) if item]
+    saved_at_label = f"{_t('saved_at')}: {saved_at}" if saved_at else ""
+    meta_items = [item for item in (saved_at_label, company, location, provider, salary) if item]
     if meta_items:
         st.markdown(
             "<div class='offer-meta'>"
@@ -960,6 +1130,9 @@ def _render_favorite_summary(favorite: Mapping[str, str], *, key_prefix: str, in
     if link:
         st.link_button(_t("open_job"), link, use_container_width=True)
 
+    if not show_management:
+        return
+
     status_cols = st.columns(4)
     for col, target_status, label_key in zip(
         status_cols,
@@ -973,8 +1146,16 @@ def _render_favorite_summary(favorite: Mapping[str, str], *, key_prefix: str, in
             disabled=disabled,
             use_container_width=True,
         ):
-            _update_favorite_record(favorite, status=target_status)
-            st.rerun()
+            try:
+                _update_favorite_record(
+                    favorite,
+                    status=target_status,
+                    default_title=_t("favorites"),
+                )
+            except StateFileError as exc:
+                st.error(str(exc))
+            else:
+                st.rerun()
 
     with st.expander(_t("notes")):
         note_value = st.text_area(
@@ -984,8 +1165,50 @@ def _render_favorite_summary(favorite: Mapping[str, str], *, key_prefix: str, in
             label_visibility="collapsed",
         )
         if st.button(_t("save_note"), key=f"{key_prefix}_save_note_{favorite['id']}_{index}"):
-            _update_favorite_record(favorite, notes=note_value)
-            st.success(_t("note_saved"))
+            try:
+                _update_favorite_record(
+                    favorite,
+                    notes=note_value,
+                    default_title=_t("favorites"),
+                )
+            except StateFileError as exc:
+                st.error(str(exc))
+            else:
+                st.success(_t("note_saved"))
+
+    delete_state_key = f"{key_prefix}_confirm_delete_{favorite['id']}_{index}"
+    if st.session_state.get(delete_state_key):
+        delete_cols = st.columns([0.5, 0.5])
+        if delete_cols[0].button(
+            _t("confirm_delete"),
+            key=f"{key_prefix}_delete_confirmed_{favorite['id']}_{index}",
+            use_container_width=True,
+        ):
+            try:
+                _delete_favorite_record(
+                    favorite["id"],
+                    default_title=_t("favorites"),
+                )
+            except StateFileError as exc:
+                st.error(str(exc))
+            else:
+                st.session_state.pop(delete_state_key, None)
+                st.session_state.favorite_flash = _t("favorite_deleted")
+                st.rerun()
+        if delete_cols[1].button(
+            _t("cancel"),
+            key=f"{key_prefix}_delete_cancel_{favorite['id']}_{index}",
+            use_container_width=True,
+        ):
+            st.session_state.pop(delete_state_key, None)
+            st.rerun()
+    elif st.button(
+        _t("delete_favorite"),
+        key=f"{key_prefix}_delete_{favorite['id']}_{index}",
+        use_container_width=True,
+    ):
+        st.session_state[delete_state_key] = True
+        st.rerun()
 
 
 def _render_provider_status(selected_providers: list[str]) -> None:
@@ -1002,19 +1225,29 @@ def _render_provider_status(selected_providers: list[str]) -> None:
 
 
 def _render_favorites_preview() -> None:
-    favorites = [
-        favorite
-        for favorite in _read_favorite_records()
-        if favorite.get("status", "pending") != "discarded"
-    ]
+    try:
+        favorites = [
+            favorite
+            for favorite in _read_favorite_records(default_title=_t("favorites"))
+            if favorite.get("status", "pending") != "discarded"
+        ]
+    except StateFileError as exc:
+        st.sidebar.error(str(exc))
+        return
+
     st.sidebar.markdown(f"### {_t('favorites')}")
     if not favorites:
         st.sidebar.caption(_t("favorites_empty"))
         return
 
-    for index, favorite in enumerate(favorites[-4:][::-1]):
+    for index, favorite in enumerate(favorites[:4]):
         with st.sidebar.container(border=True):
-            _render_favorite_summary(favorite, key_prefix="sidebar_favorite", index=index)
+            _render_favorite_summary(
+                favorite,
+                key_prefix="sidebar_favorite",
+                index=index,
+                show_management=False,
+            )
 
 
 def _run_search(
@@ -1044,10 +1277,17 @@ def _run_search(
     return offers, None
 
 
-def _render_offer_card(offer: Mapping[str, Any], index: int, key_prefix: str) -> None:
+def _render_offer_card(
+    offer: Mapping[str, Any],
+    index: int,
+    key_prefix: str,
+    favorite_ids: set[str] | None = None,
+) -> None:
     title, company, location, provider, salary, link = _offer_detail(offer)
     description = clean_text(offer.get("description"), "")
     updated = clean_text(offer.get("_updated"), "")
+    favorite_id = _favorite_id_from_offer(offer)
+    is_saved = favorite_id in (favorite_ids or set())
 
     with st.container(border=True):
         top_left, top_right = st.columns([0.76, 0.24])
@@ -1069,9 +1309,22 @@ def _render_offer_card(offer: Mapping[str, Any], index: int, key_prefix: str) ->
         with top_right:
             if link and link != "#":
                 st.link_button(_t("open_job"), link, use_container_width=True)
-            if st.button(_t("save"), key=f"{key_prefix}_save_{index}", use_container_width=True):
-                _save_offer_to_favorites(offer)
-                st.success(_t("saved"))
+            if is_saved:
+                st.button(
+                    _t("already_saved"),
+                    key=f"{key_prefix}_saved_{favorite_id}_{index}",
+                    disabled=True,
+                    use_container_width=True,
+                )
+            elif st.button(_t("save"), key=f"{key_prefix}_save_{index}", use_container_width=True):
+                try:
+                    saved_record = _save_offer_to_favorites(offer)
+                except StateFileError as exc:
+                    st.error(str(exc))
+                else:
+                    if favorite_ids is not None:
+                        favorite_ids.add(saved_record["id"])
+                    st.success(_t("saved"))
 
         if description:
             st.markdown(
@@ -1080,6 +1333,49 @@ def _render_offer_card(offer: Mapping[str, Any], index: int, key_prefix: str) ->
             )
             with st.expander(_t("details")):
                 st.write(description)
+
+
+def _render_chat_offer_actions(
+    offers: Sequence[Mapping[str, Any]],
+    *,
+    key_prefix: str,
+    favorite_ids: set[str] | None = None,
+) -> None:
+    if not offers:
+        return
+
+    with st.expander(_t("chat_recent_results"), expanded=True):
+        for index, offer in enumerate(offers):
+            title, company, location, provider, salary, link = _offer_detail(offer)
+            favorite_id = _favorite_id_from_offer(offer)
+            is_saved = favorite_id in (favorite_ids or set())
+            meta = " · ".join(item for item in (company, location, provider, salary) if item)
+            cols = st.columns([0.68, 0.16, 0.16])
+            cols[0].markdown(f"**{index + 1}. {html.escape(title)}**")
+            if meta:
+                cols[0].caption(meta)
+            if link and link != "#":
+                cols[1].link_button(_t("open_job"), link, use_container_width=True)
+            if is_saved:
+                cols[2].button(
+                    _t("already_saved"),
+                    key=f"{key_prefix}_chat_saved_{favorite_id}_{index}",
+                    disabled=True,
+                    use_container_width=True,
+                )
+            elif cols[2].button(
+                _t("save"),
+                key=f"{key_prefix}_chat_save_{favorite_id}_{index}",
+                use_container_width=True,
+            ):
+                try:
+                    saved_record = _save_offer_to_favorites(offer)
+                except StateFileError as exc:
+                    st.error(str(exc))
+                else:
+                    if favorite_ids is not None:
+                        favorite_ids.add(saved_record["id"])
+                    st.success(f"{_t('chat_saved_offer')}: {title}")
 
 
 def _filtered_sorted_offers(
@@ -1188,11 +1484,16 @@ def _render_comparison(offers: list[dict[str, Any]], *, key_prefix: str) -> None
 
 
 def _render_saved_searches() -> None:
-    searches = _load_saved_searches()
     with st.expander(_t("saved_searches"), expanded=False):
+        try:
+            searches = _load_saved_searches()
+        except StateFileError as exc:
+            st.error(str(exc))
+            return
+
         if not searches:
             st.caption(_t("no_saved_searches"))
-        for index, search in enumerate(searches[::-1]):
+        for index, search in enumerate(_newest_first(searches)):
             query = clean_text(search.get("query"), "")
             location = clean_text(search.get("location"), _t("all_spain"))
             providers = ", ".join(search.get("providers", []))
@@ -1226,20 +1527,29 @@ def _render_results(offers: list[dict[str, Any]], *, key_prefix: str) -> None:
     visible_offers = _filtered_sorted_offers(offers, key_prefix=key_prefix)
     st.markdown(f"### {_t('results')} ({len(visible_offers)})")
     _render_comparison(visible_offers, key_prefix=key_prefix)
+    try:
+        saved_favorite_ids = _favorite_ids_for_ui()
+    except StateFileError as exc:
+        saved_favorite_ids = set()
+        st.warning(str(exc))
     for index, offer in enumerate(visible_offers):
-        _render_offer_card(offer, index, key_prefix)
+        _render_offer_card(offer, index, key_prefix, saved_favorite_ids)
 
 
-def _format_offers_markdown(offers: list[dict[str, Any]]) -> str:
+def _format_offers_markdown(
+    offers: list[dict[str, Any]],
+    *,
+    language: str | None = None,
+) -> str:
     lines = []
-    for offer in offers:
-        title, company, location, provider, salary, link = _offer_detail(offer)
+    for index, offer in enumerate(offers, start=1):
+        title, company, location, provider, salary, link = _offer_detail(offer, language=language)
         provider_prefix = f"[{provider}] " if provider else ""
         salary_suffix = f" - {salary}" if salary else ""
-        link_label = _t("open_job")
+        link_label = _label("open_job", language)
         safe_link = link or "#"
         lines.append(
-            f"- {provider_prefix}{title} {_t('at_word')} {company} ({location})"
+            f"{index}. {provider_prefix}{title} {_label('at_word', language)} {company} ({location})"
             f"{salary_suffix}. [{link_label}]({safe_link})"
         )
 
@@ -1256,7 +1566,7 @@ def _ensure_chat_state() -> None:
     if "memoria" not in st.session_state:
         st.session_state.memoria = []
 
-    st.session_state.instrucciones = SystemMessage(content=_t("chat_instructions"))
+    st.session_state.instrucciones = _chat_system_message(_language_code())
 
 
 def _search_context() -> dict[str, Any]:
@@ -1287,77 +1597,204 @@ def buscar_empleos(criterio: str):
     if error:
         return error
     if not offers:
-        return _t("no_results")
-    return _format_offers_markdown(offers)
+        st.session_state.chat_search_results = []
+        st.session_state.chat_search_query = criterio
+        return _chat_t("no_results")
+    st.session_state.chat_search_results = [dict(offer) for offer in offers]
+    st.session_state.chat_search_query = criterio
+    return _format_offers_markdown(offers, language=_chat_language_code())
 
 
 @tool
 def guardar_empleo(detalle_completo: str, enlace_url: str = ""):
-    """Guarda el detalle de un empleo en favoritos.txt."""
-    _upsert_favorite_record(_manual_favorite_record(detalle_completo, enlace_url))
-    return _t("tool_saved")
+    """Guarda el detalle de un empleo en favoritos.json."""
+    try:
+        chat_result = _save_chat_offer_reference(
+            detalle_completo,
+            enlace_url,
+            language=_chat_language_code(),
+        )
+        if chat_result:
+            return chat_result
+        resolved_link = clean_text(enlace_url, "") or _extract_first_url(detalle_completo)
+        _upsert_favorite_record(
+            _manual_favorite_record(detalle_completo, resolved_link),
+            default_title=_t("favorites"),
+        )
+    except StateFileError as exc:
+        return str(exc)
+    return _chat_t("tool_saved")
+
+
+def _is_internal_tool_content(content: Any) -> bool:
+    text = str(content or "").strip()
+    if not text:
+        return False
+    internal_markers = (
+        "buscar_empleos",
+        '"buscar_empleos"',
+        "'buscar_empleos'",
+        "guardar_empleo",
+        '"guardar_empleo"',
+        "'guardar_empleo'",
+        "tool_calls",
+        '"tool_calls"',
+        "'tool_calls'",
+        '"parameters"',
+        "'parameters'",
+    )
+    return any(marker in text for marker in internal_markers)
+
+
+def _visible_ai_content(message: AIMessage) -> str:
+    if getattr(message, "tool_calls", None):
+        return ""
+    content = str(message.content or "").strip()
+    if _is_internal_tool_content(content):
+        return ""
+    return content
+
+
+def _render_chat_history() -> None:
+    for msg in reversed(st.session_state.memoria):
+        if isinstance(msg, HumanMessage):
+            st.chat_message("user").write(msg.content)
+        elif isinstance(msg, AIMessage):
+            content = _visible_ai_content(msg)
+            if content:
+                st.chat_message("assistant").write(content)
+
+
+def _run_chat_tool_call(tool_call: Mapping[str, Any]) -> str:
+    args = normalize_tool_args(tool_call["args"])
+    tool_name = tool_call["name"]
+    tool_map = {
+        "buscar_empleos": buscar_empleos,
+        "guardar_empleo": guardar_empleo,
+    }
+    tool_func = tool_map.get(tool_name)
+    if tool_func is None:
+        return _chat_t("tool_unavailable")
+
+    try:
+        return str(tool_func.invoke(args))
+    except Exception as exc:
+        return f"{_chat_t('chat_action_error')}: {exc}"
+
+
+def _handle_chat_prompt(prompt: str) -> None:
+    response_language = _detect_chat_language(
+        prompt,
+        fallback_language=st.session_state.get("chat_response_language"),
+    )
+    st.session_state.chat_response_language = response_language
+    instructions = _chat_system_message(response_language)
+    st.session_state.memoria.append(HumanMessage(content=prompt))
+    context_messages = [instructions] + st.session_state.memoria
+
+    try:
+        response = st.session_state.llm.invoke(context_messages)
+    except Exception as exc:
+        st.session_state.memoria.append(
+            AIMessage(content=f"{_translation('ollama_error', response_language)}: {exc}")
+        )
+        return
+
+    st.session_state.memoria.append(response)
+    tool_calls = getattr(response, "tool_calls", None) or []
+    if not tool_calls:
+        return
+
+    tool_results = []
+    with st.spinner(_t("searching")):
+        for tool_call in tool_calls:
+            result = _run_chat_tool_call(tool_call)
+            tool_results.append(result)
+            st.session_state.memoria.append(
+                ToolMessage(content=result, tool_call_id=tool_call["id"])
+            )
+
+        try:
+            second = st.session_state.llm.invoke(
+                [instructions] + st.session_state.memoria
+            )
+        except Exception as exc:
+            st.session_state.memoria.append(
+                AIMessage(content=f"{_translation('ollama_complete_error', response_language)}: {exc}")
+            )
+            return
+
+    final_content = str(second.content or "").strip()
+    if final_content and not _is_internal_tool_content(final_content):
+        st.session_state.memoria.append(second)
+    elif tool_results:
+        st.session_state.memoria.append(AIMessage(content=tool_results[-1]))
 
 
 def _render_chat_tab() -> None:
     _ensure_chat_state()
 
-    for msg in st.session_state.memoria:
-        if isinstance(msg, HumanMessage):
-            st.chat_message("user").write(msg.content)
-        elif isinstance(msg, AIMessage) and msg.content:
-            st.chat_message("assistant").write(msg.content)
-        elif isinstance(msg, ToolMessage):
-            with st.expander(_t("tool_result")):
-                st.markdown(msg.content)
+    shortcut_prompt = ""
+    shortcut_cols = st.columns([0.26, 0.26, 0.30, 0.18])
+    if shortcut_cols[0].button(
+        _t("chat_shortcut_remote"),
+        key="chat_shortcut_remote",
+        use_container_width=True,
+    ):
+        shortcut_prompt = _t("chat_shortcut_remote")
+    if shortcut_cols[1].button(
+        _t("chat_shortcut_recent"),
+        key="chat_shortcut_recent",
+        use_container_width=True,
+    ):
+        shortcut_prompt = _t("chat_shortcut_recent")
+    if shortcut_cols[2].button(
+        _t("chat_shortcut_save_first"),
+        key="chat_shortcut_save_first",
+        disabled=not bool(st.session_state.get("chat_search_results")),
+        use_container_width=True,
+    ):
+        shortcut_prompt = _t("chat_shortcut_save_first")
+    if shortcut_cols[3].button(
+        _t("chat_clear"),
+        key="chat_clear",
+        disabled=not bool(
+            st.session_state.get("memoria")
+            or st.session_state.get("chat_search_results")
+        ),
+        use_container_width=True,
+    ):
+        st.session_state.memoria = []
+        st.session_state.chat_search_results = []
+        st.session_state.chat_search_query = ""
+        st.session_state.chat_response_language = _language_code()
 
-    if prompt := st.chat_input(_t("chat_input")):
-        st.chat_message("user").write(prompt)
-        st.session_state.memoria.append(HumanMessage(content=prompt))
+    with st.form("chat_prompt_form", clear_on_submit=True):
+        prompt = st.text_input(
+            _t("chat_input"),
+            placeholder=_t("chat_input"),
+            label_visibility="collapsed",
+        )
+        submitted = st.form_submit_button(_t("chat_submit"), use_container_width=True)
 
-        with st.chat_message("assistant"):
-            context_messages = [st.session_state.instrucciones] + st.session_state.memoria
-            try:
-                response = st.session_state.llm.invoke(context_messages)
-            except Exception as exc:
-                st.error(f"{_t('ollama_error')}: {exc}")
-                st.stop()
+    active_prompt = shortcut_prompt or (prompt.strip() if submitted else "")
+    if active_prompt:
+        with st.spinner(_t("chat_thinking")):
+            _handle_chat_prompt(active_prompt)
 
-            st.session_state.memoria.append(response)
-            tool_calls = getattr(response, "tool_calls", None) or []
+    try:
+        saved_favorite_ids = _favorite_ids_for_ui()
+    except StateFileError as exc:
+        saved_favorite_ids = set()
+        st.warning(str(exc))
 
-            if tool_calls:
-                for tool_call in tool_calls:
-                    args = normalize_tool_args(tool_call["args"])
-                    tool_name = tool_call["name"]
-                    tool_map = {
-                        "buscar_empleos": buscar_empleos,
-                        "guardar_empleo": guardar_empleo,
-                    }
-                    tool_func = tool_map.get(tool_name)
-                    if tool_func is None:
-                        result = f"{_t('tool_unavailable')}: {tool_name}"
-                    else:
-                        with st.status(tool_name, expanded=True):
-                            result = tool_func.invoke(args)
-                            st.write(result)
+    _render_chat_offer_actions(
+        st.session_state.get("chat_search_results", []),
+        key_prefix="chat_cached",
+        favorite_ids=saved_favorite_ids,
+    )
 
-                    st.session_state.memoria.append(
-                        ToolMessage(content=str(result), tool_call_id=tool_call["id"])
-                    )
-
-                try:
-                    second = st.session_state.llm.invoke(
-                        [st.session_state.instrucciones] + st.session_state.memoria
-                    )
-                except Exception as exc:
-                    st.error(f"{_t('ollama_complete_error')}: {exc}")
-                    st.stop()
-
-                if second.content:
-                    st.markdown(second.content)
-                st.session_state.memoria.append(second)
-            else:
-                st.markdown(response.content)
+    _render_chat_history()
 
 
 def _render_search_tab(
@@ -1455,40 +1892,77 @@ def _render_search_tab(
             f"{last_search['query']} · {last_search.get('location') or _t('all_spain')}"
         )
         if save_cols[1].button(_t("save_search"), use_container_width=True):
-            _save_search(last_search)
-            st.success(_t("search_saved"))
+            try:
+                _save_search(last_search)
+            except StateFileError as exc:
+                st.error(str(exc))
+            else:
+                st.success(_t("search_saved"))
 
     _render_saved_searches()
     _render_results(st.session_state.get("direct_search_results", []), key_prefix="direct")
 
 
 def _render_favorites_tab() -> None:
-    favorites = _read_favorite_records()
+    try:
+        favorites = _read_favorite_records(default_title=_t("favorites"))
+    except StateFileError as exc:
+        st.error(str(exc))
+        return
+
     top_left, top_right = st.columns([0.8, 0.2])
     top_left.markdown(f"### {_t('favorites')} ({len(favorites)})")
     if top_right.button(_t("refresh"), use_container_width=True):
         st.rerun()
+    if flash_message := st.session_state.pop("favorite_flash", ""):
+        st.success(flash_message)
 
     if not favorites:
         st.info(_t("favorites_empty"))
         return
 
     st.caption(_t("favorites_hint"))
+    filter_cols = st.columns([0.34, 0.22, 0.22, 0.22])
+    text_filter = filter_cols[0].text_input(
+        _t("favorite_search"),
+        placeholder=_t("favorite_search_placeholder"),
+        key="favorite_text_filter",
+    )
     status_labels = [_t("all_statuses"), *[_status_label(status) for status in _status_options()]]
-    selected_status_label = st.selectbox(_t("status_filter"), status_labels)
+    selected_status_label = filter_cols[1].selectbox(
+        _t("status_filter"),
+        status_labels,
+        key="favorite_status_filter",
+    )
     selected_status = ""
     if selected_status_label != _t("all_statuses"):
         selected_status = next(
             status for status in _status_options() if _status_label(status) == selected_status_label
         )
+    selected_providers = filter_cols[2].multiselect(
+        _t("source_filter"),
+        options=_filter_values(favorites, "provider"),
+        key="favorite_provider_filter",
+    )
+    selected_locations = filter_cols[3].multiselect(
+        _t("city_filter"),
+        options=_filter_values(favorites, "location"),
+        key="favorite_location_filter",
+    )
 
-    visible_favorites = [
-        favorite
-        for favorite in favorites
-        if not selected_status or favorite.get("status", "pending") == selected_status
-    ]
+    visible_favorites = _filter_favorite_records(
+        favorites,
+        text=text_filter,
+        status=selected_status,
+        providers=selected_providers,
+        locations=selected_locations,
+    )
+    st.caption(f"{len(visible_favorites)} / {len(favorites)}")
+    if not visible_favorites:
+        st.info(_t("filtered_favorites_empty"))
+        return
 
-    for index, favorite in enumerate(visible_favorites[::-1]):
+    for index, favorite in enumerate(visible_favorites):
         with st.container(border=True):
             _render_favorite_summary(favorite, key_prefix="favorite", index=index)
 
@@ -1540,6 +2014,19 @@ def _apply_theme() -> None:
         h1 {
             font-size: 2rem;
             margin-bottom: 0.4rem;
+        }
+        .app-subtitle {
+            color: var(--text-color);
+            font-size: 1.25rem;
+            font-weight: 600;
+            line-height: 1.35;
+            margin: -0.1rem 0 1.35rem;
+        }
+        .app-shark {
+            display: inline-block;
+            font-size: 1.25em;
+            margin-left: 0.35rem;
+            vertical-align: -0.08em;
         }
         h4 {
             font-size: 1.05rem;
@@ -1675,80 +2162,92 @@ def _apply_theme() -> None:
     )
 
 
-st.set_page_config(page_title="Tiburoncín Job Bot", page_icon="T", layout="wide")
-_apply_theme()
+def main() -> None:
+    st.set_page_config(page_title="¿Con instinto de tiburón?", page_icon="T", layout="wide")
+    _apply_theme()
 
-language_labels = list(LANGUAGE_OPTIONS.keys())
-current_language = st.session_state.get("language", "es")
-default_language_label = next(
-    label for label, code in LANGUAGE_OPTIONS.items() if code == current_language
-)
-selected_language_label = st.sidebar.selectbox(
-    "Idioma / Language",
-    options=language_labels,
-    index=language_labels.index(default_language_label),
-)
-st.session_state.language = LANGUAGE_OPTIONS[selected_language_label]
+    language_labels = list(LANGUAGE_OPTIONS.keys())
+    current_language = st.session_state.get("language", "es")
+    default_language_label = next(
+        label for label, code in LANGUAGE_OPTIONS.items() if code == current_language
+    )
+    selected_language_label = st.sidebar.selectbox(
+        "Idioma / Language",
+        options=language_labels,
+        index=language_labels.index(default_language_label),
+    )
+    st.session_state.language = LANGUAGE_OPTIONS[selected_language_label]
 
-st.title(_t("app_title"))
-
-st.sidebar.markdown(f"### {_t('sources')}")
-default_provider_values = _configured_provider_values()
-default_provider_labels = [PROVIDER_LABELS[value] for value in default_provider_values]
-selected_provider_labels = st.sidebar.multiselect(
-    _t("providers"),
-    options=list(PROVIDER_LABELS.values()),
-    default=default_provider_labels,
-)
-selected_provider_values = [
-    value for value, label in PROVIDER_LABELS.items() if label in selected_provider_labels
-]
-
-st.sidebar.markdown(f"### {_t('filters')}")
-sidebar_city_option = st.sidebar.selectbox(
-    _t("default_city"),
-    options=_city_options(),
-    format_func=_city_label,
-)
-sidebar_custom_city = st.sidebar.text_input(
-    _t("default_city_custom"), value="", placeholder=_t("custom_city_placeholder")
-)
-sidebar_location = _resolve_city(sidebar_city_option, sidebar_custom_city)
-sidebar_remote = st.sidebar.checkbox(_t("default_remote"), value=False)
-sidebar_max_age = st.sidebar.slider(_t("max_days"), min_value=1, max_value=90, value=30)
-results_per_provider = st.sidebar.number_input(
-    _t("results_per_source"), min_value=1, max_value=20, value=5, step=1
-)
-
-st.session_state.search_context = {
-    "providers": selected_provider_values,
-    "location": sidebar_location,
-    "remote": sidebar_remote,
-    "max_age_days": int(sidebar_max_age),
-    "results_per_provider": int(results_per_provider),
-}
-
-_render_provider_status(selected_provider_values)
-_render_favorites_preview()
-
-tab_search, tab_chat, tab_favorites, tab_config = st.tabs(
-    [_t("tab_search"), _t("tab_chat"), _t("tab_favorites"), _t("tab_config")]
-)
-
-with tab_search:
-    _render_search_tab(
-        selected_provider_values,
-        sidebar_location,
-        sidebar_remote,
-        int(sidebar_max_age),
-        int(results_per_provider),
+    st.title(_t("app_title"))
+    st.markdown(
+        "<div class='app-subtitle'>"
+        f"{html.escape(_t('app_subtitle'))}"
+        f"<span class='app-shark'>{html.escape(_t('app_shark_emoji'))}</span>"
+        "</div>",
+        unsafe_allow_html=True,
     )
 
-with tab_chat:
-    _render_chat_tab()
+    st.sidebar.markdown(f"### {_t('sources')}")
+    default_provider_values = _configured_provider_values()
+    default_provider_labels = [PROVIDER_LABELS[value] for value in default_provider_values]
+    selected_provider_labels = st.sidebar.multiselect(
+        _t("providers"),
+        options=list(PROVIDER_LABELS.values()),
+        default=default_provider_labels,
+    )
+    selected_provider_values = [
+        value for value, label in PROVIDER_LABELS.items() if label in selected_provider_labels
+    ]
 
-with tab_favorites:
-    _render_favorites_tab()
+    st.sidebar.markdown(f"### {_t('filters')}")
+    sidebar_city_option = st.sidebar.selectbox(
+        _t("default_city"),
+        options=_city_options(),
+        format_func=_city_label,
+    )
+    sidebar_custom_city = st.sidebar.text_input(
+        _t("default_city_custom"), value="", placeholder=_t("custom_city_placeholder")
+    )
+    sidebar_location = _resolve_city(sidebar_city_option, sidebar_custom_city)
+    sidebar_remote = st.sidebar.checkbox(_t("default_remote"), value=False)
+    sidebar_max_age = st.sidebar.slider(_t("max_days"), min_value=1, max_value=90, value=30)
+    results_per_provider = st.sidebar.number_input(
+        _t("results_per_source"), min_value=1, max_value=20, value=5, step=1
+    )
 
-with tab_config:
-    _render_config_tab()
+    st.session_state.search_context = {
+        "providers": selected_provider_values,
+        "location": sidebar_location,
+        "remote": sidebar_remote,
+        "max_age_days": int(sidebar_max_age),
+        "results_per_provider": int(results_per_provider),
+    }
+
+    _render_provider_status(selected_provider_values)
+    _render_favorites_preview()
+
+    tab_search, tab_chat, tab_favorites, tab_config = st.tabs(
+        [_t("tab_search"), _t("tab_chat"), _t("tab_favorites"), _t("tab_config")]
+    )
+
+    with tab_search:
+        _render_search_tab(
+            selected_provider_values,
+            sidebar_location,
+            sidebar_remote,
+            int(sidebar_max_age),
+            int(results_per_provider),
+        )
+
+    with tab_chat:
+        _render_chat_tab()
+
+    with tab_favorites:
+        _render_favorites_tab()
+
+    with tab_config:
+        _render_config_tab()
+
+
+if __name__ == "__main__":
+    main()

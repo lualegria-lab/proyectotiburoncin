@@ -11,6 +11,7 @@ Asistente de empleo con dos interfaces:
 ```bash
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt
+venv/bin/pip install -r requirements-dev.txt
 cp .env.example .env
 ```
 
@@ -77,8 +78,9 @@ La interfaz web incluye:
 - Resultados en tarjetas con enlace y boton para guardar.
 - Filtros, ordenacion y comparacion sobre resultados ya cargados.
 - Busquedas guardadas en `busquedas_guardadas.json`.
-- Chat con Ollama usando los filtros seleccionados.
-- Favoritos estructurados en `favoritos.json`, con lectura compatible de `favoritos.txt`.
+- Chat con Ollama usando los filtros seleccionados y respuesta en el idioma detectado del mensaje.
+- Favoritos estructurados en `favoritos.json`, incluyendo ofertas guardadas desde el chat, con lectura compatible de `favoritos.txt`.
+- Listado de favoritos y busquedas guardadas de mas reciente a mas antiguo.
 - Estado manual por favorito: pendiente, aplicado, entrevista o descartado.
 - Notas por favorito y boton para abrir oferta sin mostrar el link crudo.
 - Pestaña de configuracion para probar claves API en la sesion sin editar `.env`.
@@ -91,3 +93,14 @@ venv/bin/python server.py
 
 Las postulaciones nuevas de la interfaz web se guardan en `favoritos.json`.
 El archivo `favoritos.txt` se sigue leyendo para compatibilidad con datos antiguos.
+
+## Desarrollo
+
+```bash
+venv/bin/python -m unittest discover -v
+venv/bin/python -m pytest -q
+venv/bin/ruff check .
+```
+
+`unittest` no requiere dependencias extra. `pytest` y `ruff` se instalan desde
+`requirements-dev.txt`.

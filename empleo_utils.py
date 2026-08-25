@@ -4,6 +4,7 @@ import html
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -39,6 +40,26 @@ class ConfigError(RuntimeError):
 
 class ExternalServiceError(RuntimeError):
     """Raised when an external service cannot return usable data."""
+
+
+def _format_request_error(
+    provider_name: str,
+    exc: requests.RequestException,
+    *,
+    secrets: Sequence[str | None] = (),
+) -> str:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    reason = getattr(response, "reason", "")
+    if status_code:
+        reason_part = f" {reason}" if reason else ""
+        return f"No pude conectar con {provider_name}: HTTP {status_code}{reason_part}."
+
+    detail = str(exc)
+    for secret in secrets:
+        if secret:
+            detail = detail.replace(secret, "[secret]")
+    return f"No pude conectar con {provider_name}: {detail}"
 
 
 def search_jobs(
@@ -106,17 +127,32 @@ def search_jobs(
         ),
     }
 
+    provider_results: dict[str, tuple[str, list[dict[str, Any]], str]] = {}
+    if provider_names:
+        max_workers = min(len(provider_names), len(searchers))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_provider = {
+                executor.submit(searchers[provider_name]): provider_name
+                for provider_name in provider_names
+            }
+            for future in as_completed(future_to_provider):
+                provider_name = future_to_provider[future]
+                try:
+                    provider_results[provider_name] = ("ok", future.result(), "")
+                except ConfigError:
+                    provider_results[provider_name] = ("config", [], "")
+                except ExternalServiceError as exc:
+                    provider_results[provider_name] = ("external", [], str(exc))
+
     for provider_name in provider_names:
-        try:
-            provider_offers = searchers[provider_name]()
-        except ConfigError:
+        status, provider_offers, error = provider_results.get(provider_name, ("config", [], ""))
+        if status == "config":
             continue
-        except ExternalServiceError as exc:
-            configured_provider_count += 1
-            external_errors.append(f"{provider_name}: {exc}")
+        configured_provider_count += 1
+        if status == "external":
+            external_errors.append(f"{provider_name}: {error}")
             continue
 
-        configured_provider_count += 1
         successful_provider_count += 1
         offers.extend(provider_offers)
 
@@ -310,7 +346,13 @@ def search_adzuna(
     except requests.Timeout as exc:
         raise ExternalServiceError("La búsqueda en Adzuna tardó demasiado.") from exc
     except requests.RequestException as exc:
-        raise ExternalServiceError(f"No pude conectar con Adzuna: {exc}") from exc
+        raise ExternalServiceError(
+            _format_request_error(
+                "Adzuna",
+                exc,
+                secrets=(resolved_app_id, resolved_app_key),
+            )
+        ) from exc
 
     try:
         payload = response.json()
@@ -364,7 +406,9 @@ def search_jooble(
     except requests.Timeout as exc:
         raise ExternalServiceError("La busqueda en Jooble tardo demasiado.") from exc
     except requests.RequestException as exc:
-        raise ExternalServiceError(f"No pude conectar con Jooble: {exc}") from exc
+        raise ExternalServiceError(
+            _format_request_error("Jooble", exc, secrets=(resolved_api_key,))
+        ) from exc
 
     try:
         payload = response.json()
@@ -434,7 +478,9 @@ def search_careerjet(
     except requests.Timeout as exc:
         raise ExternalServiceError("La busqueda en Careerjet tardo demasiado.") from exc
     except requests.RequestException as exc:
-        raise ExternalServiceError(f"No pude conectar con Careerjet: {exc}") from exc
+        raise ExternalServiceError(
+            _format_request_error("Careerjet", exc, secrets=(resolved_api_key,))
+        ) from exc
 
     try:
         payload = response.json()
@@ -518,7 +564,9 @@ def search_theirstack(
             "La busqueda en TheirStack tardo demasiado."
         ) from exc
     except requests.RequestException as exc:
-        raise ExternalServiceError(f"No pude conectar con TheirStack: {exc}") from exc
+        raise ExternalServiceError(
+            _format_request_error("TheirStack", exc, secrets=(resolved_api_key,))
+        ) from exc
 
     try:
         payload = response.json()
@@ -604,10 +652,77 @@ def save_favorite(
     return file_path
 
 
+STRING_TOOL_ARG_NAMES = {
+    "criterio",
+    "detalle",
+    "detalle_completo",
+    "enlace_url",
+    "nombre_puesto",
+}
+
+
+def _flatten_tool_value(value: Any) -> str:
+    if isinstance(value, Mapping):
+        if "value" in value:
+            return _flatten_tool_value(value["value"])
+
+        preferred_keys = (
+            "puesto",
+            "title",
+            "role",
+            "tipo",
+            "type",
+            "trabajo",
+            "query",
+            "criterio",
+            "keywords",
+            "detalle",
+            "detalle_completo",
+            "nombre_puesto",
+            "empresa",
+            "company",
+            "lugar",
+            "location",
+            "ciudad",
+            "city",
+            "url",
+            "link",
+            "enlace_url",
+        )
+        parts = []
+        seen = set()
+        for key in preferred_keys:
+            if key in value:
+                seen.add(key)
+                flattened = _flatten_tool_value(value[key])
+                if flattened:
+                    parts.append(flattened)
+        for key, item in value.items():
+            if key in seen:
+                continue
+            flattened = _flatten_tool_value(item)
+            if flattened:
+                parts.append(flattened)
+        return _single_line(" ".join(parts))
+
+    if isinstance(value, (list, tuple, set)):
+        return _single_line(
+            " ".join(
+                flattened
+                for item in value
+                if (flattened := _flatten_tool_value(item))
+            )
+        )
+
+    return _single_line(str(value or ""))
+
+
 def normalize_tool_args(args: Mapping[str, Any]) -> dict[str, Any]:
     normalized = {}
     for key, value in args.items():
-        if isinstance(value, dict) and "value" in value:
+        if key in STRING_TOOL_ARG_NAMES and isinstance(value, (Mapping, list, tuple, set)):
+            normalized[key] = _flatten_tool_value(value)
+        elif isinstance(value, dict) and "value" in value:
             normalized[key] = value["value"]
         else:
             normalized[key] = value

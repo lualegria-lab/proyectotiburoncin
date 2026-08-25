@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import Mock, patch
@@ -13,6 +14,7 @@ from empleo_utils import (
     THEIRSTACK_URL,
     format_offers_markdown,
     load_sample_jobs,
+    normalize_tool_args,
     save_favorite,
     search_adzuna,
     search_careerjet,
@@ -54,6 +56,20 @@ class EmpleoUtilsTest(TestCase):
 
         self.assertIn("POSTULACIÓN PENDIENTE", content)
         self.assertIn("Recepcionista Madrid - Link: https://example.com", content)
+
+    def test_normalize_tool_args_flattens_structured_search_criterion(self):
+        result = normalize_tool_args(
+            {"criterio": {"lugar": "barcelona", "type": "asistente"}}
+        )
+
+        self.assertEqual(result["criterio"], "asistente barcelona")
+
+    def test_normalize_tool_args_flattens_nested_string_tool_value(self):
+        result = normalize_tool_args(
+            {"criterio": {"value": {"puesto": "frontend", "ciudad": "Madrid"}}}
+        )
+
+        self.assertEqual(result["criterio"], "frontend Madrid")
 
     def test_load_sample_jobs_supports_legacy_json_shape(self):
         target = Path("test_sample_jobs_tmp.json")
@@ -296,6 +312,40 @@ class EmpleoUtilsTest(TestCase):
                 result = search_jobs("python", providers=["jooble", "careerjet"])
 
         self.assertEqual(result, [])
+
+    def test_search_jobs_runs_configured_providers_in_parallel_and_keeps_order(self):
+        barrier = threading.Barrier(2)
+        jooble_offer = {
+            "title": "Jooble Python",
+            "company": {"display_name": "ACME"},
+            "location": {"display_name": "Madrid"},
+            "redirect_url": "https://example.com/jooble-python",
+            "_provider": "Jooble",
+        }
+        careerjet_offer = {
+            "title": "Careerjet Python",
+            "company": {"display_name": "Beta"},
+            "location": {"display_name": "Barcelona"},
+            "redirect_url": "https://example.com/careerjet-python",
+            "_provider": "Careerjet",
+        }
+
+        def jooble(*_args, **_kwargs):
+            barrier.wait(timeout=2)
+            return [jooble_offer]
+
+        def careerjet(*_args, **_kwargs):
+            barrier.wait(timeout=2)
+            return [careerjet_offer]
+
+        with patch("empleo_utils.search_jooble", side_effect=jooble):
+            with patch("empleo_utils.search_careerjet", side_effect=careerjet):
+                result = search_jobs("python", providers=["jooble", "careerjet"])
+
+        self.assertEqual(
+            [offer["title"] for offer in result],
+            ["Jooble Python", "Careerjet Python"],
+        )
 
     def test_search_jobs_requires_at_least_one_configured_provider(self):
         with self.assertRaises(ConfigError):

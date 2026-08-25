@@ -107,7 +107,10 @@ def ejecutar_cli():
                 resultado = f"Herramienta no disponible: {nombre_herramienta}"
             else:
                 print(f"[IA EJECUTANDO: {nombre_herramienta}...]")
-                resultado = herramienta.invoke(argumentos)
+                try:
+                    resultado = herramienta.invoke(argumentos)
+                except Exception as exc:
+                    resultado = f"No pude ejecutar {nombre_herramienta}: {exc}"
 
             print(resultado)
             memoria.append(ToolMessage(content=str(resultado), tool_call_id=id_llamada))
