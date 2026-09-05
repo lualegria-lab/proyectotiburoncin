@@ -404,6 +404,7 @@ TRANSLATIONS = {
         "tool_saved": "Guardado en favoritos",
         "tool_result": "Resultado de herramienta",
         "chat_recent_results": "Ofertas recientes del chat",
+        "chat_results_ready": "He encontrado {count} ofertas. Puedes abrirlas o guardarlas desde las tarjetas.",
         "chat_saved_offer": "Guardado en favoritos",
         "chat_no_recent_results": "No hay ofertas recientes del chat para guardar.",
         "chat_offer_not_found": "No encontre esa oferta entre los ultimos resultados del chat.",
@@ -439,9 +440,10 @@ TRANSLATIONS = {
 1. Entiende español e ingles.
 2. Responde en el idioma del ultimo mensaje del usuario.
 3. Cuando busques, usa la busqueda interna.
-4. Muestra resultados con numero, titulo, empresa, lugar, fuente y enlace.
-5. Si el usuario quiere guardar una oferta ya mostrada, no busques otra vez: guarda la oferta usando su numero, titulo, empresa o enlace.
-6. No inventes ofertas ni enlaces.""",
+4. Muestra resultados con numero, titulo, empresa, lugar y fuente.
+5. No muestres URLs ni enlaces Markdown en la respuesta: la interfaz mostrara los botones Abrir oferta y Guardar.
+6. Si el usuario quiere guardar una oferta ya mostrada, no busques otra vez: guarda la oferta usando su numero, titulo, empresa o enlace.
+7. No inventes ofertas ni enlaces.""",
     },
     "en": {
         "app_title": "Feeling sharky?",
@@ -528,6 +530,7 @@ TRANSLATIONS = {
         "tool_saved": "Saved to favorites",
         "tool_result": "Tool result",
         "chat_recent_results": "Recent chat jobs",
+        "chat_results_ready": "I found {count} jobs. You can open or save them from the cards.",
         "chat_saved_offer": "Saved to favorites",
         "chat_no_recent_results": "There are no recent chat jobs to save.",
         "chat_offer_not_found": "I could not find that job in the latest chat results.",
@@ -563,9 +566,10 @@ TRANSLATIONS = {
 1. Understand Spanish and English.
 2. Respond in the language of the user's latest message.
 3. When searching, use the internal search.
-4. Show results with number, title, company, location, source, and link.
-5. If the user wants to save a job already shown, do not search again: save the job using its number, title, company, or link.
-6. Do not invent jobs or links.""",
+4. Show results with number, title, company, location, and source.
+5. Do not show URLs or Markdown links in the response: the interface will render Open job and Save buttons.
+6. If the user wants to save a job already shown, do not search again: save the job using its number, title, company, or link.
+7. Do not invent jobs or links.""",
     },
 }
 
@@ -689,7 +693,9 @@ def _chat_system_message(language: str) -> SystemMessage:
             f"The latest user message is in {response_language}. "
             f"Respond only in {response_language} for this turn.\n"
             "When searching, use the internal job search tool.\n"
-            "Show results with number, title, company, location, source, and link.\n"
+            "Show results with number, title, company, location, and source.\n"
+            "Do not show URLs or Markdown links in the response: "
+            "the interface renders Open job and Save buttons for each result.\n"
             "If the user wants to save a job already shown, do not search again: "
             "save the job using its number, title, company, or link.\n"
             "Do not invent jobs or links."
@@ -1282,12 +1288,15 @@ def _render_offer_card(
     index: int,
     key_prefix: str,
     favorite_ids: set[str] | None = None,
+    *,
+    display_index: int | None = None,
 ) -> None:
     title, company, location, provider, salary, link = _offer_detail(offer)
     description = clean_text(offer.get("description"), "")
     updated = clean_text(offer.get("_updated"), "")
     favorite_id = _favorite_id_from_offer(offer)
     is_saved = favorite_id in (favorite_ids or set())
+    display_title = f"{display_index}. {title}" if display_index is not None else title
 
     with st.container(border=True):
         top_left, top_right = st.columns([0.76, 0.24])
@@ -1296,7 +1305,7 @@ def _render_offer_card(
                 f"<div class='offer-provider'>{html.escape(provider)}</div>",
                 unsafe_allow_html=True,
             )
-            st.markdown(f"#### {html.escape(title)}")
+            st.markdown(f"#### {html.escape(display_title)}")
             st.markdown(
                 "<div class='offer-meta'>"
                 f"<span>{html.escape(company)}</span>"
@@ -1344,38 +1353,15 @@ def _render_chat_offer_actions(
     if not offers:
         return
 
-    with st.expander(_t("chat_recent_results"), expanded=True):
-        for index, offer in enumerate(offers):
-            title, company, location, provider, salary, link = _offer_detail(offer)
-            favorite_id = _favorite_id_from_offer(offer)
-            is_saved = favorite_id in (favorite_ids or set())
-            meta = " · ".join(item for item in (company, location, provider, salary) if item)
-            cols = st.columns([0.68, 0.16, 0.16])
-            cols[0].markdown(f"**{index + 1}. {html.escape(title)}**")
-            if meta:
-                cols[0].caption(meta)
-            if link and link != "#":
-                cols[1].link_button(_t("open_job"), link, use_container_width=True)
-            if is_saved:
-                cols[2].button(
-                    _t("already_saved"),
-                    key=f"{key_prefix}_chat_saved_{favorite_id}_{index}",
-                    disabled=True,
-                    use_container_width=True,
-                )
-            elif cols[2].button(
-                _t("save"),
-                key=f"{key_prefix}_chat_save_{favorite_id}_{index}",
-                use_container_width=True,
-            ):
-                try:
-                    saved_record = _save_offer_to_favorites(offer)
-                except StateFileError as exc:
-                    st.error(str(exc))
-                else:
-                    if favorite_ids is not None:
-                        favorite_ids.add(saved_record["id"])
-                    st.success(f"{_t('chat_saved_offer')}: {title}")
+    st.markdown(f"### {_t('chat_recent_results')} ({len(offers)})")
+    for index, offer in enumerate(offers):
+        _render_offer_card(
+            offer,
+            index,
+            key_prefix,
+            favorite_ids,
+            display_index=index + 1,
+        )
 
 
 def _filtered_sorted_offers(
@@ -1543,14 +1529,12 @@ def _format_offers_markdown(
 ) -> str:
     lines = []
     for index, offer in enumerate(offers, start=1):
-        title, company, location, provider, salary, link = _offer_detail(offer, language=language)
+        title, company, location, provider, salary, _link = _offer_detail(offer, language=language)
         provider_prefix = f"[{provider}] " if provider else ""
         salary_suffix = f" - {salary}" if salary else ""
-        link_label = _label("open_job", language)
-        safe_link = link or "#"
         lines.append(
             f"{index}. {provider_prefix}{title} {_label('at_word', language)} {company} ({location})"
-            f"{salary_suffix}. [{link_label}]({safe_link})"
+            f"{salary_suffix}."
         )
 
     return "\n".join(lines)
@@ -1646,13 +1630,36 @@ def _is_internal_tool_content(content: Any) -> bool:
     return any(marker in text for marker in internal_markers)
 
 
+def _strip_chat_links(content: str) -> str:
+    link_labels = "Abrir oferta|Open job|Enlace|Link"
+    text = re.sub(
+        rf"\s*\.?\s*\[(?:{link_labels})\]\(https?://[^)]+\)",
+        ".",
+        str(content or ""),
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\s+-\s*(?:Enlace|Link):\s*https?://\S+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\[([^\]]+)\]\(https?://[^)]+\)", r"\1", text)
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"[ \t]+([.,;:])", r"\1", text)
+    text = re.sub(r"\.{2,}", ".", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def _visible_ai_content(message: AIMessage) -> str:
     if getattr(message, "tool_calls", None):
         return ""
     content = str(message.content or "").strip()
     if _is_internal_tool_content(content):
         return ""
-    return content
+    return _strip_chat_links(content)
 
 
 def _render_chat_history() -> None:
@@ -1682,6 +1689,13 @@ def _run_chat_tool_call(tool_call: Mapping[str, Any]) -> str:
         return f"{_chat_t('chat_action_error')}: {exc}"
 
 
+def _visible_tool_result(tool_name: str, result: str, language: str) -> str:
+    if tool_name == "buscar_empleos" and st.session_state.get("chat_search_results"):
+        count = len(st.session_state.get("chat_search_results", []))
+        return _translation("chat_results_ready", language).format(count=count)
+    return _strip_chat_links(result)
+
+
 def _handle_chat_prompt(prompt: str) -> None:
     response_language = _detect_chat_language(
         prompt,
@@ -1709,26 +1723,16 @@ def _handle_chat_prompt(prompt: str) -> None:
     with st.spinner(_t("searching")):
         for tool_call in tool_calls:
             result = _run_chat_tool_call(tool_call)
-            tool_results.append(result)
+            tool_results.append(
+                _visible_tool_result(tool_call["name"], result, response_language)
+            )
             st.session_state.memoria.append(
                 ToolMessage(content=result, tool_call_id=tool_call["id"])
             )
 
-        try:
-            second = st.session_state.llm.invoke(
-                [instructions] + st.session_state.memoria
-            )
-        except Exception as exc:
-            st.session_state.memoria.append(
-                AIMessage(content=f"{_translation('ollama_complete_error', response_language)}: {exc}")
-            )
-            return
-
-    final_content = str(second.content or "").strip()
-    if final_content and not _is_internal_tool_content(final_content):
-        st.session_state.memoria.append(second)
-    elif tool_results:
-        st.session_state.memoria.append(AIMessage(content=tool_results[-1]))
+        st.session_state.memoria.append(
+            AIMessage(content=_strip_chat_links("\n\n".join(tool_results)))
+        )
 
 
 def _render_chat_tab() -> None:

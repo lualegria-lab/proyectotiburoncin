@@ -13,6 +13,7 @@ from agente_web import (
     _resolve_chat_offer_reference,
     _save_chat_offer_reference,
     _visible_ai_content,
+    _visible_tool_result,
 )
 from state_store import (
     StateFileError,
@@ -35,6 +36,7 @@ class AgenteWebStateTest(TestCase):
 
         self.assertIn("Respond only in English", english_message)
         self.assertIn("Respond only in Spanish", spanish_message)
+        self.assertIn("Do not show URLs or Markdown links", english_message)
 
     def test_internal_tool_content_is_hidden_from_chat_history(self):
         raw_tool_json = AIMessage(
@@ -58,6 +60,42 @@ class AgenteWebStateTest(TestCase):
         self.assertEqual(
             _visible_ai_content(normal_message),
             "He encontrado varias ofertas en Madrid.",
+        )
+
+    def test_chat_history_strips_job_links(self):
+        message = AIMessage(
+            content=(
+                "1. Frontend developer at Blue Pixel (Barcelona). "
+                "[Open job](https://example.com/frontend)\n"
+                "2. Backend developer at ACME (Madrid) - Link: https://example.com/backend"
+            )
+        )
+
+        result = _visible_ai_content(message)
+
+        self.assertIn("Frontend developer at Blue Pixel", result)
+        self.assertIn("Backend developer at ACME", result)
+        self.assertNotIn("[Open job]", result)
+        self.assertNotIn("https://example.com", result)
+
+    def test_search_tool_result_is_summarized_for_card_rendering(self):
+        offers = [
+            {
+                "title": "Frontend developer",
+                "company": {"display_name": "Blue Pixel"},
+                "location": {"display_name": "Barcelona"},
+                "redirect_url": "https://example.com/frontend",
+                "_provider": "JSON demo",
+            }
+        ]
+        tool_result = "1. [JSON demo] Frontend developer at Blue Pixel (Barcelona)."
+
+        with patch("agente_web.st.session_state", {"chat_search_results": offers}):
+            result = _visible_tool_result("buscar_empleos", tool_result, "en")
+
+        self.assertEqual(
+            result,
+            "I found 1 jobs. You can open or save them from the cards.",
         )
 
     def test_chat_offer_reference_resolves_by_number_word_and_text(self):
@@ -118,8 +156,9 @@ class AgenteWebStateTest(TestCase):
             result = _format_offers_markdown(offers)
 
         self.assertTrue(result.startswith("1. [JSON demo] Frontend developer"))
+        self.assertNotIn("https://example.com/frontend", result)
 
-    def test_chat_offer_markdown_can_use_detected_english_language(self):
+    def test_chat_offer_markdown_can_use_detected_english_language_without_links(self):
         offers = [
             {
                 "title": "Frontend developer",
@@ -134,7 +173,8 @@ class AgenteWebStateTest(TestCase):
             result = _format_offers_markdown(offers, language="en")
 
         self.assertIn("Frontend developer at Blue Pixel", result)
-        self.assertIn("[Open job](https://example.com/frontend)", result)
+        self.assertNotIn("[Open job]", result)
+        self.assertNotIn("https://example.com/frontend", result)
 
     def test_chat_offer_reference_can_be_saved_to_favorites_json(self):
         offers = [
