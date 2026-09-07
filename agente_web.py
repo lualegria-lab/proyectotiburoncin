@@ -2035,10 +2035,44 @@ def _apply_theme() -> None:
         h4 {
             font-size: 1.05rem;
         }
+        :root {
+            --jobbot-sidebar-background: var(--secondary-background-color, #111827);
+        }
+        @supports (background-color: color-mix(in srgb, #000000 90%, #ffffff 10%)) {
+            :root {
+                --jobbot-sidebar-background: color-mix(
+                    in srgb,
+                    var(--background-color, #111827) 88%,
+                    var(--text-color, #ffffff) 12%
+                );
+            }
+        }
+        [data-testid="stSidebar"],
+        [data-testid="stSidebar"] > div,
+        [data-testid="stSidebarContent"],
+        [data-testid="stSidebarUserContent"] {
+            background-color: var(--jobbot-sidebar-background) !important;
+            background-image: none !important;
+        }
         [data-testid="stSidebar"] {
-            background: var(--secondary-background-color);
             border-right: 1px solid rgba(128, 128, 128, 0.22);
             color: var(--text-color);
+        }
+        [data-testid="stSidebarCollapsedControl"] {
+            background-color: var(--jobbot-sidebar-background) !important;
+            border-radius: 8px;
+        }
+        @media (max-width: 768px) {
+            [data-testid="stSidebar"],
+            [data-testid="stSidebar"] > div,
+            [data-testid="stSidebarContent"],
+            [data-testid="stSidebarUserContent"] {
+                background-color: var(--jobbot-sidebar-background) !important;
+                opacity: 1 !important;
+            }
+            [data-testid="stSidebar"] {
+                box-shadow: 0.35rem 0 1.6rem rgba(0, 0, 0, 0.35);
+            }
         }
         [data-testid="stSidebar"] h3 {
             margin-top: 0.35rem;
