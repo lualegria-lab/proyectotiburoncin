@@ -2035,79 +2035,31 @@ def _apply_theme() -> None:
         h4 {
             font-size: 1.05rem;
         }
-        :root {
-            --jobbot-sidebar-background: #111827;
-            --jobbot-sidebar-surface: #1f2937;
-            --jobbot-sidebar-text: #f9fafb;
-            --jobbot-sidebar-border: rgba(255, 255, 255, 0.16);
-            --jobbot-sidebar-shadow: rgba(0, 0, 0, 0.35);
-        }
-        @media (prefers-color-scheme: light) {
-            :root {
-                --jobbot-sidebar-background: #ffffff;
-                --jobbot-sidebar-surface: #f3f4f6;
-                --jobbot-sidebar-text: #111827;
-                --jobbot-sidebar-border: rgba(17, 24, 39, 0.14);
-                --jobbot-sidebar-shadow: rgba(17, 24, 39, 0.18);
-            }
-        }
-        html[data-theme="dark"],
-        body[data-theme="dark"],
-        .stApp[data-theme="dark"],
-        [data-testid="stApp"][data-theme="dark"] {
-            --jobbot-sidebar-background: #111827;
-            --jobbot-sidebar-surface: #1f2937;
-            --jobbot-sidebar-text: #f9fafb;
-            --jobbot-sidebar-border: rgba(255, 255, 255, 0.16);
-            --jobbot-sidebar-shadow: rgba(0, 0, 0, 0.35);
-        }
-        html[data-theme="light"],
-        body[data-theme="light"],
-        .stApp[data-theme="light"],
-        [data-testid="stApp"][data-theme="light"] {
-            --jobbot-sidebar-background: #ffffff;
-            --jobbot-sidebar-surface: #f3f4f6;
-            --jobbot-sidebar-text: #111827;
-            --jobbot-sidebar-border: rgba(17, 24, 39, 0.14);
-            --jobbot-sidebar-shadow: rgba(17, 24, 39, 0.18);
-        }
         [data-testid="stSidebar"],
         [data-testid="stSidebar"] > div,
         [data-testid="stSidebarContent"],
         [data-testid="stSidebarUserContent"] {
-            background-color: var(--jobbot-sidebar-background) !important;
+            background-color: Canvas !important;
             background-image: none !important;
         }
         [data-testid="stSidebar"] {
-            border-right: 1px solid var(--jobbot-sidebar-border);
-            color: var(--jobbot-sidebar-text) !important;
+            border-right: 1px solid rgba(128, 128, 128, 0.22);
+            color: CanvasText;
         }
         [data-testid="stSidebarCollapsedControl"] {
-            background-color: var(--jobbot-sidebar-background) !important;
+            background-color: Canvas !important;
             border-radius: 8px;
-        }
-        [data-testid="stSidebar"] h3,
-        [data-testid="stSidebar"] label,
-        [data-testid="stSidebar"] p,
-        [data-testid="stSidebar"] input,
-        [data-testid="stSidebar"] textarea {
-            color: var(--jobbot-sidebar-text) !important;
-        }
-        [data-testid="stSidebar"] [data-baseweb="select"] > div,
-        [data-testid="stSidebar"] [data-baseweb="base-input"] {
-            background-color: var(--jobbot-sidebar-surface) !important;
-            border-color: var(--jobbot-sidebar-border) !important;
         }
         @media (max-width: 768px) {
             [data-testid="stSidebar"],
             [data-testid="stSidebar"] > div,
             [data-testid="stSidebarContent"],
             [data-testid="stSidebarUserContent"] {
-                background-color: var(--jobbot-sidebar-background) !important;
+                background-color: Canvas !important;
                 opacity: 1 !important;
             }
             [data-testid="stSidebar"] {
-                box-shadow: 0.35rem 0 1.6rem var(--jobbot-sidebar-shadow);
+                box-shadow: 0.35rem 0 1.6rem rgba(0, 0, 0, 0.28);
             }
         }
         [data-testid="stSidebar"] h3 {
